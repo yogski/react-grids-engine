@@ -1,0 +1,239 @@
+/* ── Layout ──────────────────────────────────────────────────────────────── */
+
+.crossword {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 1rem;
+  font-family: inherit;
+}
+
+.crossword__header {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.crossword__title {
+  margin: 0;
+  font-size: 1.5rem;
+}
+
+.crossword__body {
+  display: flex;
+  gap: 2rem;
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+
+/* ── Grid ────────────────────────────────────────────────────────────────── */
+
+.crossword__grid-wrap {
+  flex: 0 0 auto;
+}
+
+.crossword__grid {
+  display: grid;
+  border: 2px solid #222;
+  outline: none;
+  /* each cell renders its own borders */
+}
+
+.crossword__grid:focus {
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.4);
+}
+
+/* ── Individual cell ─────────────────────────────────────────────────────── */
+
+.cw-cell {
+  position: relative;
+  width: var(--cw-cell-size, 44px);
+  height: var(--cw-cell-size, 44px);
+  box-sizing: border-box;
+  user-select: none;
+}
+
+/* Black / blocked cell */
+.cw-cell--black {
+  background: #1a1a1a;
+}
+
+/* White / playable cell */
+.cw-cell--white {
+  background: #fff;
+  border: 1px solid #888;
+  cursor: pointer;
+}
+
+.cw-cell--white:hover {
+  background: #f0f7ff;
+}
+
+/* Cells belonging to the active clue (highlight row/col) */
+.cw-cell--in-clue {
+  background: #d9eeff;
+}
+
+/* The exact cell the cursor is on */
+.cw-cell--active {
+  background: #5aadff !important;
+}
+
+/* Correctly solved cells */
+.cw-cell--solved {
+  background: #d4f5d4 !important;
+}
+
+/* Cell number in top-left corner */
+.cw-cell__num {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  font-size: 0.55em;
+  line-height: 1;
+  color: #333;
+  pointer-events: none;
+  font-weight: 600;
+}
+
+/* Letter shown in the centre of the cell */
+.cw-cell__letter {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.1em;
+  pointer-events: none;
+}
+
+/* Active cell – lighter, "in-progress" look */
+.cw-cell--active .cw-cell__letter {
+  color: #1a1a1a;
+  font-weight: 400;
+}
+
+/* Filled (inactive) cell – bolder */
+.cw-cell--white:not(.cw-cell--active) .cw-cell__letter {
+  color: #111;
+  font-weight: 700;
+}
+
+/* Solved cell – green and very bold */
+.cw-cell--solved .cw-cell__letter {
+  color: #166534;
+  font-weight: 900;
+}
+
+/* ── Clue panels ─────────────────────────────────────────────────────────── */
+
+.crossword__clues {
+  flex: 1 1 220px;
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+  min-width: 0;
+}
+
+.crossword__clue-section h3 {
+  margin: 0 0 0.5rem;
+  font-size: 0.9rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #555;
+  border-bottom: 2px solid #e2e8f0;
+  padding-bottom: 0.25rem;
+}
+
+.crossword__clue-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.crossword__clue-item {
+  padding: 0.3rem 0.5rem;
+  border-radius: 4px;
+  font-size: 0.85rem;
+  cursor: pointer;
+  line-height: 1.4;
+  color: #374151;
+  transition: background 0.1s;
+}
+
+.crossword__clue-item:hover {
+  background: #f1f5f9;
+}
+
+/* Currently active clue */
+.crossword__clue-item--active {
+  background: #dbeafe;
+  color: #1e40af;
+  font-weight: 600;
+}
+
+/* Solved clue */
+.crossword__clue-item--solved {
+  color: #166534;
+  font-weight: 700;
+  text-decoration: line-through;
+  text-decoration-color: #86efac;
+}
+
+/* ── Congratulations banner ──────────────────────────────────────────────── */
+
+.crossword__congrats {
+  background: #f0fdf4;
+  border: 2px solid #86efac;
+  border-radius: 0.75rem;
+  padding: 1rem 1.5rem;
+  text-align: center;
+  color: #166534;
+  font-weight: 700;
+  font-size: 1.1rem;
+  animation: pop-in 0.3s ease;
+}
+
+@keyframes pop-in {
+  from { transform: scale(0.9); opacity: 0; }
+  to   { transform: scale(1);   opacity: 1; }
+}
+
+/* ── Direction toggle ────────────────────────────────────────────────────── */
+
+.crossword__toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.3rem 0.75rem;
+  border: 1px solid #cbd5e1;
+  border-radius: 999px;
+  background: #f8fafc;
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+  color: #334155;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.crossword__toggle:hover {
+  background: #e2e8f0;
+}
+
+/* ── Responsive ──────────────────────────────────────────────────────────── */
+
+@media (max-width: 600px) {
+  .crossword {
+    --cw-cell-size: 36px;
+  }
+
+  .crossword__body {
+    flex-direction: column;
+  }
+}
