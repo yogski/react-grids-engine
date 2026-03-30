@@ -12,6 +12,9 @@ dist
 dist-ssr
 specs
 *.local
+scripts/*.json
+scripts/*.log
+scripts/*.txt
 
 # Editor directories and files
 .vscode/*

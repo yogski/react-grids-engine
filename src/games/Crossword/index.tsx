@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   type CellCoord,
   type ClueDirection,
+  type CrosswordPuzzle,
   type ParsedCrossword,
   type Slot,
   getNextCell,
@@ -11,6 +12,7 @@ import {
   validateSlot,
 } from './logic'
 import { TEST_PUZZLE } from './testPuzzle'
+import { TEST_PUZZLE_2 } from './testPuzzle2'
 import './styles.css'
 
 // ─── GridCell ────────────────────────────────────────────────────────────────
@@ -107,10 +109,42 @@ function ClueList({ title, slots, activeSlotId, solvedSlots, onClueClick }: Clue
   )
 }
 
-// ─── Crossword ───────────────────────────────────────────────────────────────
+// ─── Crossword (selector shell) ─────────────────────────────────────────────
+
+const PUZZLES: Record<string, { label: string; puzzle: CrosswordPuzzle }> = {
+  p1: { label: 'Puzzle 1', puzzle: TEST_PUZZLE },
+  p2: { label: 'Puzzle 2', puzzle: TEST_PUZZLE_2 },
+}
 
 export function Crossword() {
-  const parsed: ParsedCrossword = useMemo(() => parseCrossword(TEST_PUZZLE), [])
+  const [puzzleId, setPuzzleId] = useState('p1')
+
+  return (
+    <div className="crossword">
+      <div className="crossword__header">
+        <h2 className="crossword__title">Crossword</h2>
+        <div className="crossword__selector">
+          {Object.entries(PUZZLES).map(([id, { label }]) => (
+            <button
+              key={id}
+              type="button"
+              onClick={() => setPuzzleId(id)}
+              aria-pressed={puzzleId === id}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+      <CrosswordGame key={puzzleId} puzzle={PUZZLES[puzzleId].puzzle} />
+    </div>
+  )
+}
+
+// ─── CrosswordGame ────────────────────────────────────────────────────────────
+
+function CrosswordGame({ puzzle }: { puzzle: CrosswordPuzzle }) {
+  const parsed: ParsedCrossword = useMemo(() => parseCrossword(puzzle), [puzzle])
 
   const [userGrid, setUserGrid] = useState<string[][]>(() =>
     Array.from({ length: parsed.rows }, () => Array<string>(parsed.cols).fill('')),
@@ -157,7 +191,7 @@ export function Crossword() {
       const containingSlots = parsed.slots.filter((s) =>
         s.cells.some((c) => c.row === row && c.col === col),
       )
-      return containingSlots.length > 0 && containingSlots.every((s) => solvedSlots.has(s.id))
+      return containingSlots.some((s) => solvedSlots.has(s.id))
     },
     [parsed.slots, solvedSlots],
   )
@@ -355,18 +389,15 @@ export function Crossword() {
   ])
 
   return (
-    <div className="crossword">
-      <div className="crossword__header">
-        <h2 className="crossword__title">Crossword</h2>
-        <button
-          type="button"
-          className="crossword__toggle"
-          onClick={() => setDirection((d) => (d === 'across' ? 'down' : 'across'))}
-          title="Toggle direction"
-        >
-          {direction === 'across' ? '→ Across' : '↓ Down'}
-        </button>
-      </div>
+    <>
+      <button
+        type="button"
+        className="crossword__toggle"
+        onClick={() => setDirection((d) => (d === 'across' ? 'down' : 'across'))}
+        title="Toggle direction"
+      >
+        {direction === 'across' ? '→ Across' : '↓ Down'}
+      </button>
 
       {isGameComplete && (
         <div className="crossword__congrats" role="status">
@@ -409,6 +440,6 @@ export function Crossword() {
           />
         </div>
       </div>
-    </div>
+    </>
   )
 }
