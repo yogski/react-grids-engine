@@ -1,0 +1,629 @@
+#!/usr/bin/env node
+"use strict";
+
+const fs = require('fs');
+const path = require('path');
+const crypto = require('crypto');
+const { spawnSync } = require('child_process');
+
+/**
+ * Return a random integer between min and max (inclusive).
+ * @param {number} min - Minimum integer (inclusive).
+ * @param {number} max - Maximum integer (inclusive).
+ * @returns {number} Random integer between min and max.
+ */
+function randInt(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min; }
+
+/**
+ * Pick a random element from an array.
+ * @template T
+ * @param {T[]} arr - Array to pick from.
+ * @returns {T|undefined} Random element or undefined if array empty.
+ */
+function pick(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
+
+/**
+ * Print an error object as JSON to stderr and exit with code 1.
+ * @param {string|Error|any} msg - Error message or object to print.
+ * @returns {never}
+ */
+function exitWithError(msg) {
+  const out = { error: String(msg) };
+  console.error(JSON.stringify(out));
+  process.exit(1);
+}
+
+/**
+ * Parse CLI arguments into a simple options object.
+ * Supports `--key value`, `--key=value`, `--flag` and `-k value`.
+ * @returns {Object<string, any>} Parsed options.
+ */
+function parseArgs() {
+  const argv = process.argv.slice(2);
+  const opts = {};
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === '--selftest') { opts.selftest = true; continue; }
+    if (a.startsWith('--')) {
+      const key = a.slice(2);
+      if (key.includes('=')) {
+        const [k, v] = key.split('='); opts[k] = v; continue;
+      }
+      const nxt = argv[i + 1];
+      if (nxt && !nxt.startsWith('-')) { opts[key] = nxt; i++; } else { opts[key] = true; }
+    } else if (a.startsWith('-')) {
+      const k = a.slice(1);
+      const nxt = argv[i + 1];
+      if (nxt && !nxt.startsWith('-')) { opts[k] = nxt; i++; } else { opts[k] = true; }
+    }
+  }
+  return opts;
+}
+
+/**
+ * Parse a size string like "15x15" into width/height.
+ * @param {string} sz - Size string in the form WxH.
+ * @returns {{w:number,h:number}|null} Parsed dimensions or null if invalid.
+ */
+function parseSize(sz) {
+  const m = String(sz).match(/^(\d+)x(\d+)$/i);
+  if (!m) return null;
+  return { w: parseInt(m[1], 10), h: parseInt(m[2], 10) };
+}
+
+/**
+ * Create a 2D grid (array of rows) initialized with `initial` value.
+ * @param {number} w - Grid width (columns).
+ * @param {number} h - Grid height (rows).
+ * @param {number} [initial=1] - Initial value for each cell.
+ * @returns {number[][]} Grid as `rows x columns` array.
+ */
+function createGrid(w, h, initial = 1) {
+  return Array.from({ length: h }, () => Array.from({ length: w }, () => initial));
+}
+
+/**
+ * Check whether the coordinates (x,y) are within grid bounds.
+ * @param {number} x - X coordinate (column).
+ * @param {number} y - Y coordinate (row).
+ * @param {number} w - Grid width.
+ * @param {number} h - Grid height.
+ * @returns {boolean} True if in bounds.
+ */
+function inBounds(x, y, w, h) { return x >= 0 && y >= 0 && x < w && y < h; }
+
+/**
+ * Compute the working area for layout generation based on symmetry option.
+ * @param {string} sym - Symmetry code (A,B,C,D,E).
+ * @param {number} w - Grid width.
+ * @param {number} h - Grid height.
+ * @returns {{x:number,y:number,w:number,h:number}} Rectangle for work area.
+ */
+function workAreaFor(sym, w, h) {
+  switch (sym) {
+    case 'A': return { x: 0, y: 0, w, h };
+    case 'B': return { x: 0, y: 0, w: Math.floor(w / 2), h: Math.floor(h / 2) };
+    case 'C': return { x: 0, y: 0, w: Math.floor(w / 2), h };
+    case 'D': return { x: 0, y: 0, w: Math.floor(w / 2), h };
+    case 'E': return { x: 0, y: 0, w: Math.floor(w / 2), h: Math.floor(h / 2) };
+    default: return { x: 0, y: 0, w, h };
+  }
+}
+
+/**
+ * Set the cell at (x,y) and the symmetric counterparts depending on `sym`.
+ * Modifies `grid` in-place.
+ * @param {number[][]} grid - Grid array (rows x cols).
+ * @param {number} x - X coordinate (column) to set.
+ * @param {number} y - Y coordinate (row) to set.
+ * @param {number} val - Value to set (0 = white/playable, 1 = black/non-playable).
+ * @param {string} sym - Symmetry code ('A','B','C','D','E').
+ * @returns {void}
+ */
+function applySymmetrySet(grid, x, y, val, sym) {
+  const h = grid.length; const w = grid[0].length;
+  /**
+   * Set a cell if coordinates are in bounds.
+   * @param {number} nx - X coordinate.
+   * @param {number} ny - Y coordinate.
+   * @returns {void}
+   */
+  function setIf(nx, ny) { if (!inBounds(nx, ny, w, h)) return; grid[ny][nx] = val; }
+  switch (sym) {
+    case 'A': setIf(x, y); break;
+    case 'D': // mirror vertical
+      setIf(x, y); setIf(w - 1 - x, y); break;
+    case 'E': // mirror vertical+horizontal
+      setIf(x, y); setIf(w - 1 - x, y); setIf(x, h - 1 - y); setIf(w - 1 - x, h - 1 - y); break;
+    case 'C': // rotation 180
+      setIf(x, y); setIf(w - 1 - x, h - 1 - y); break;
+    case 'B': // rotation 90 requires square
+      setIf(x, y);
+      setIf(h - 1 - y, x);
+      setIf(w - 1 - x, h - 1 - y);
+      setIf(y, w - 1 - x);
+      break;
+    default: setIf(x, y); break;
+  }
+}
+
+
+
+/**
+ * Convert the grid to a hex string where each bit represents a cell (1 = black, 0 = white).
+ * Bits are concatenated in row-major order and padded to a full byte before hex encoding.
+ * @param {number[][]} grid - Grid array (rows x cols).
+ * @returns {string} Uppercase hex string representing the grid bitmap.
+ */
+function gridToHex(grid) {
+  const w = grid[0].length, h = grid.length;
+  const bits = [];
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) bits.push(grid[y][x] ? '1' : '0');
+  // pad to full byte
+  while (bits.length % 8 !== 0) bits.push('0');
+  const bytes = [];
+  for (let i = 0; i < bits.length; i += 8) {
+    const byte = parseInt(bits.slice(i, i + 8).join(''), 2);
+    bytes.push(byte);
+  }
+  return Buffer.from(bytes).toString('hex').toUpperCase();
+}
+
+/**
+ * Compute the average pairwise Manhattan distance for an array of points.
+ * @param {{x:number,y:number}[]} points - Array of points with x/y coordinates.
+ * @returns {number} Average Manhattan distance between all distinct point pairs.
+ */
+function computeAveragePairwiseManhattan(points) {
+  const n = points.length; if (n < 2) return Infinity;
+  let sum = 0, pairs = 0;
+  for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) { sum += Math.abs(points[i].x - points[j].x) + Math.abs(points[i].y - points[j].y); pairs++; }
+  return sum / Math.max(1, pairs);
+}
+
+/**
+ * Return scattering thresholds (average distance and target count) based on density.
+ * @param {number} density - Density level (1-5).
+ * @param {number} areaW - Work area width.
+ * @param {number} areaH - Work area height.
+ * @returns {{avg:number,count:number}} Thresholds used by the scattering algorithm.
+ */
+function scatteringThresholds(density, areaW, areaH) {
+  switch (Number(density)) {
+    case 1: return { avg: 4.5, count: Math.min(areaW, areaH) };
+    case 2: return { avg: 3.8, count: Math.max(areaW, areaH) };
+    case 3: return { avg: 3.0, count: Math.min(areaW + areaH, Math.floor((areaW * areaH) * 0.12)) };
+    case 4: return { avg: 2.4, count: Math.max(areaW + areaH, Math.floor((areaW * areaH) * 0.14)) };
+    case 5: return { avg: 1.8, count: Math.floor((areaW * areaH) * 0.20) };
+    default: return { avg: 3.0, count: Math.min(areaW + areaH, Math.floor((areaW * areaH) * 0.12)) };
+  }
+}
+
+/**
+ * Scatter seed white cells within the specified work area and apply symmetry.
+ * Seeds are placed with simple adjacency and repeat-position constraints.
+ * @param {number[][]} grid - Grid to write into (modified in-place).
+ * @param {{x:number,y:number,w:number,h:number}} area - Work area rectangle.
+ * @param {number} density - Density level (1-5).
+ * @param {string} sym - Symmetry code.
+ * @returns {{x:number,y:number}[]} Array of placed seed coordinates.
+ */
+function scatterSeeds(grid, area, density, sym) {
+  const seeds = [];
+  const maxAttempts = 50000;
+  let attempts = 0;
+  const { x: ax, y: ay, w: aw, h: ah } = area;
+  const thresh = scatteringThresholds(density, aw, ah);
+  while (attempts++ < maxAttempts) {
+    const nx = ax + randInt(0, Math.max(0, aw - 1));
+    const ny = ay + randInt(0, Math.max(0, ah - 1));
+    // skip if already white in the mirrored grid
+    if (grid[ny][nx] === 0) continue;
+    // adjacency check
+    let adjacent = false;
+    const adjDirs = [[1,0],[-1,0],[0,1],[0,-1]];
+    for (const [dx, dy] of adjDirs) {
+      const tx = nx + dx, ty = ny + dy;
+      if (inBounds(tx, ty, grid[0].length, grid.length) && grid[ty][tx] === 0) { adjacent = true; break; }
+    }
+    if (adjacent) continue;
+    // same x or y with two or more existing white seeds
+    const sameX = seeds.filter(p => p.x === nx).length;
+    const sameY = seeds.filter(p => p.y === ny).length;
+    if (sameX >= 2 || sameY >= 2) continue;
+    // accept seed
+    seeds.push({ x: nx, y: ny });
+    applySymmetrySet(grid, nx, ny, 0, sym);
+    if (seeds.length >= Math.max(2, thresh.count)) {
+      const avg = computeAveragePairwiseManhattan(seeds);
+      if (avg <= thresh.avg) break;
+    }
+  }
+  return seeds;
+}
+
+/**
+ * Expand each seed into a short random walk ('worm') to create contiguous white regions.
+ * @param {number[][]} grid - Grid to modify in-place.
+ * @param {{x:number,y:number}[]} seeds - Initial seed coordinates.
+ * @param {string} sym - Symmetry code to apply when expanding.
+ * @returns {void}
+ */
+function expandWorms(grid, seeds, sym) {
+  const dirs = [[1,0],[-1,0],[0,1],[0,-1]];
+  const w = grid[0].length, h = grid.length;
+  for (const s of seeds) {
+    let cx = s.x, cy = s.y;
+    for (let steps = 0; steps < 50; steps++) {
+      const dir = pick(dirs);
+      const length = randInt(1, 4);
+      let blocked = false;
+      for (let i = 1; i <= length; i++) {
+        const nx = cx + dir[0] * i, ny = cy + dir[1] * i;
+        if (!inBounds(nx, ny, w, h) || grid[ny][nx] === 0) { blocked = true; break; }
+      }
+      if (blocked) break;
+      for (let i = 1; i <= length; i++) {
+        const nx = cx + dir[0] * i, ny = cy + dir[1] * i;
+        applySymmetrySet(grid, nx, ny, 0, sym);
+      }
+      cx += dir[0] * length; cy += dir[1] * length;
+    }
+  }
+}
+
+/**
+ * Groom the grid by removing isolated white cells and breaking very long runs.
+ * @param {number[][]} grid - Grid modified in-place.
+ * @param {string} sym - Symmetry code used when changing cells.
+ * @param {number} minWordLen - Minimum word length (used to determine grooming thresholds).
+ * @returns {void}
+ */
+function groomGrid(grid, sym, minWordLen) {
+  const w = grid[0].length, h = grid.length;
+  // remove isolated white cells
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      if (grid[y][x] === 0) {
+        const neighbors = [[1,0],[-1,0],[0,1],[0,-1]];
+        const count = neighbors.reduce((s, [dx,dy]) => s + ((inBounds(x+dx, y+dy, w, h) && grid[y+dy][x+dx] === 0) ? 1 : 0), 0);
+        if (count === 0) { applySymmetrySet(grid, x, y, 1, sym); changed = true; }
+      }
+    }
+  }
+  // break very long runs
+  const longLimit = Math.min(Math.max(w, h), 14);
+  for (let y = 0; y < h; y++) {
+    let run = 0, start = 0;
+    for (let x = 0; x <= w; x++) {
+      if (x < w && grid[y][x] === 0) { if (run === 0) start = x; run++; } else {
+        if (run > longLimit) {
+          const bx = Math.floor((start + start + run) / 2);
+          applySymmetrySet(grid, bx, y, 1, sym);
+        }
+        run = 0;
+      }
+    }
+  }
+  for (let x = 0; x < w; x++) {
+    let run = 0, start = 0;
+    for (let y = 0; y <= h; y++) {
+      if (y < h && grid[y][x] === 0) { if (run === 0) start = y; run++; } else {
+        if (run > longLimit) {
+          const by = Math.floor((start + start + run) / 2);
+          applySymmetrySet(grid, x, by, 1, sym);
+        }
+        run = 0;
+      }
+    }
+  }
+}
+
+/**
+ * Identify across and down slots (contiguous white cell sequences) in the grid.
+ * @param {number[][]} grid - Grid array (rows x cols).
+ * @param {number} minLen - Minimum slot length to include.
+ * @returns {{across: Array, down: Array}} Objects containing arrays of slot descriptors.
+ * Each slot descriptor contains { id, x, y, len, cells, clue, answer } where cells is
+ * an array of { x, y, idx }.
+ */
+function listSlots(grid, minLen) {
+  const w = grid[0].length, h = grid.length;
+  const across = [], down = [];
+  let aCounter = 1, dCounter = 1;
+  // across
+  for (let y = 0; y < h; y++) {
+    let x = 0;
+    while (x < w) {
+      if (grid[y][x] === 0) {
+        const startX = x; let len = 0;
+        while (x < w && grid[y][x] === 0) { len++; x++; }
+        if (len >= minLen) {
+          const id = `a${aCounter++}`;
+          const cells = [];
+          for (let i = 0; i < len; i++) cells.push({ x: startX + i, y, idx: i });
+          across.push({ id, x: startX, y, len, cells, clue: '', answer: null });
+        }
+      } else x++;
+    }
+  }
+  // down
+  for (let x = 0; x < w; x++) {
+    let y = 0;
+    while (y < h) {
+      if (grid[y][x] === 0) {
+        const startY = y; let len = 0;
+        while (y < h && grid[y][x] === 0) { len++; y++; }
+        if (len >= minLen) {
+          const id = `d${dCounter++}`;
+          const cells = [];
+          for (let i = 0; i < len; i++) cells.push({ x, y: startY + i, idx: i });
+          down.push({ id, x, y: startY, len, cells, clue: '', answer: null });
+        }
+      } else y++;
+    }
+  }
+  return { across, down };
+}
+
+/**
+ * Load a corpus file (JSONL/JSON or plaintext) and index words by length.
+ * @param {string} corpusPath - Path to corpus file.
+ * @returns {Map<number, Array<{word:string,clue:string,difficulty:number,obscurity:number,language:string,theme:string}>>|null}
+ */
+function loadCorpus(corpusPath) {
+  if (!fs.existsSync(corpusPath)) return null;
+  const ext = path.extname(corpusPath).toLowerCase();
+  const data = fs.readFileSync(corpusPath, 'utf8');
+  const items = [];
+  if (ext === '.jsonl' || ext === '.json') {
+    for (const line of data.split(/\r?\n/)) if (line.trim()) try { items.push(JSON.parse(line)); } catch (e) {}
+  } else {
+    for (const line of data.split(/\r?\n/)) {
+      const w = (line || '').trim(); if (!w) continue; items.push({ word: w, clue: `Clue for ${w}`, difficulty: 3, obscurity: 2, language: 'English', theme: 'mixed' });
+    }
+  }
+  const byLength = new Map();
+  for (const it of items) {
+    if (!it.word) continue; const word = String(it.word).toUpperCase(); const len = word.length; if (len < 1) continue;
+    if (!byLength.has(len)) byLength.set(len, []);
+    byLength.get(len).push({ word, clue: it.clue || `Clue for ${word}`, difficulty: Number(it.difficulty) || 3, obscurity: Number(it.obscurity) || 2, language: it.language || 'English', theme: it.theme || 'mixed' });
+  }
+  return byLength;
+}
+
+/**
+ * Return candidate words from the corpus that fit a given slot and the current assignment constraints.
+ * @param {{id:string,x:number,y:number,len:number,cells:Array}} slot - Slot descriptor.
+ * @param {Map<number,Array>} byLength - Map of word-length -> word objects.
+ * @param {{language?:string,theme?:string,difficultyRange:number[],obscurityRange:number[]}} constraints
+ * @param {{__cells?:Object}} assignment - Current assignment with a __cells map of placed letters.
+ * @param {Map<string,object>|Object} slotIndexMap - Additional slot index (unused but kept for signature).
+ * @returns {Array<{word:string,clue:string,difficulty:number,obscurity:number,language:string,theme:string}>}
+ */
+function candidatesForSlot(slot, byLength, constraints, assignment, slotIndexMap) {
+  const pool = byLength.get(slot.len) || [];
+  const cand = [];
+  for (const p of pool) {
+    if (constraints.language && p.language && p.language !== constraints.language) continue;
+    if (constraints.theme && p.theme && constraints.theme !== 'mixed' && p.theme !== constraints.theme) continue;
+    if (p.difficulty < constraints.difficultyRange[0] || p.difficulty > constraints.difficultyRange[1]) continue;
+    if (p.obscurity < constraints.obscurityRange[0] || p.obscurity > constraints.obscurityRange[1]) continue;
+    // check intersections
+    let ok = true;
+    for (const cell of slot.cells) {
+      const key = `${cell.x},${cell.y}`;
+      if (assignment.__cells && assignment.__cells[key]) {
+        const ch = assignment.__cells[key];
+        const expected = p.word[cell.idx];
+        if (ch !== expected) { ok = false; break; }
+      }
+    }
+    if (ok) cand.push(p);
+  }
+  return cand;
+}
+
+/**
+ * Place a chosen word into the assignment and mark its letters in the assignment cell map.
+ * @param {{id:string,cells:Array}} slot - Slot descriptor.
+ * @param {{word:string}} wordObj - Word object with `word` property.
+ * @param {Object} assignment - Assignment object to modify (will gain __cells map).
+ * @returns {void}
+ */
+function placeWordInAssignment(slot, wordObj, assignment) {
+  assignment[slot.id] = wordObj.word;
+  if (!assignment.__cells) assignment.__cells = {};
+  for (const c of slot.cells) {
+    assignment.__cells[`${c.x},${c.y}`] = wordObj.word[c.idx];
+  }
+}
+
+/**
+ * Remove a previously placed word from the assignment. This function clears the
+ * slot entry and the __cells map; callers may need to rebuild __cells if desired.
+ * @param {{id:string}} slot - Slot descriptor.
+ * @param {Object} assignment - Assignment object to modify.
+ * @returns {void}
+ */
+function removeWordFromAssignment(slot, assignment) {
+  delete assignment[slot.id];
+  // rebuild __cells from other assignments
+  const cells = {};
+  for (const k of Object.keys(assignment)) {
+    if (k === '__cells') continue;
+    const w = assignment[k];
+    // find slot by id not available here; caller should keep slots order
+  }
+  delete assignment.__cells;
+}
+
+/**
+ * Backtracking solver that fills crossword slots using the provided corpus index.
+ * The solver dynamically selects the remaining slot with the fewest candidates
+ * and attempts to assign words. It will relax difficulty/obscurity constraints
+ * for a slot if no candidates are found under the stricter constraints.
+ * @param {Array<Object>} allSlots - Array of slot descriptors (across + down).
+ * @param {Map<number,Array>} byLength - Map from word length to arrays of word objects.
+ * @param {Object} constraints - Constraints object (difficultyRange, obscurityRange, language, theme).
+ * @returns {{success:boolean,assignment:Object}} Result with success flag and assignment map `slotId -> word`.
+ */
+function solveSlots(allSlots, byLength, constraints) {
+  // Dynamic backtracking: always pick the remaining slot with fewest candidates
+  const slotMap = new Map(allSlots.map(s => [s.id, s]));
+  const assignment = {};
+
+  /**
+   * Rebuild the assignment.__cells map from current slot assignments.
+   * @returns {Object} Map of "x,y" -> letter
+   */
+  function rebuildCells() {
+    const cells = {};
+    for (const key of Object.keys(assignment)) {
+      if (key === '__cells') continue;
+      const slot = slotMap.get(key);
+      const word = assignment[key];
+      for (let i = 0; i < slot.cells.length; i++) {
+        const c = slot.cells[i];
+        cells[`${c.x},${c.y}`] = word[i];
+      }
+    }
+    return cells;
+  }
+
+  const maxSteps = 200000;
+  let steps = 0;
+
+  /**
+   * Recursive backtracking function.
+   * @param {string[]} remainingIds - Remaining slot ids to fill.
+   * @returns {boolean} True when a complete assignment is found.
+   */
+  function backtrack(remainingIds) {
+    if (remainingIds.length === 0) return true;
+    if (++steps > maxSteps) return false;
+
+    // pick the slot with fewest candidates now
+    let bestId = null;
+    let bestCand = null;
+    for (const id of remainingIds) {
+      const slot = slotMap.get(id);
+      let cand = candidatesForSlot(slot, byLength, constraints, { __cells: assignment.__cells || {} }, slotMap);
+      if (!cand || cand.length === 0) {
+        // relax constraints for this slot if none found
+        const relaxed = Object.assign({}, constraints, { difficultyRange: [1, 5], obscurityRange: [1, 5] });
+        cand = candidatesForSlot(slot, byLength, relaxed, { __cells: assignment.__cells || {} }, slotMap);
+      }
+      if (!cand || cand.length === 0) return false; // dead end even after relax
+      if (!bestCand || cand.length < bestCand.length) { bestCand = cand; bestId = id; }
+    }
+
+    const slot = slotMap.get(bestId);
+    for (const cand of bestCand) {
+      assignment[slot.id] = cand.word;
+      assignment.__cells = rebuildCells();
+      const nextRemaining = remainingIds.filter(x => x !== slot.id);
+      if (backtrack(nextRemaining)) return true;
+      delete assignment[slot.id];
+      assignment.__cells = rebuildCells();
+    }
+    return false;
+  }
+
+  const allIds = allSlots.map(s => s.id);
+  const success = backtrack(allIds);
+  return { success, assignment };
+}
+
+/**
+ * Main entry point: parse CLI args, load corpus, attempt layout generation and slot-filling,
+ * and write the resulting crossword JSON to stdout or a file.
+ * @returns {Promise<void>}
+ */
+async function main() {
+  const args = parseArgs();
+  if (args.selftest) {
+    // generate a sample corpus first
+    const samplePath = path.join(__dirname, 'sample_corpus.jsonl');
+    if (!fs.existsSync(samplePath)) {
+      console.log('Generating sample corpus...');
+      spawnSync(process.execPath, [path.join(__dirname, 'generate_sample_corpus.cjs'), samplePath], { stdio: 'inherit' });
+    }
+    // run a small test 9x9
+    args.size = '9x9'; args.corpus = samplePath; args.symmetry = 'A'; args.density = 3; args.min = 3; args.max = 9; args.output = path.join(__dirname, 'sample_crossword.json');
+  }
+
+  const size = parseSize(args.size);
+  if (!size) exitWithError('Missing or invalid --size value (e.g., 15x15)');
+  const w = size.w, h = size.h;
+  if (w < 4 || h < 4) exitWithError('Grid width and height must be >= 4');
+  if (w / h > 3 || h / w > 3) exitWithError('Grid ratio too extreme');
+  const sym = (args.symmetry || 'A').toUpperCase();
+  if (['B'].includes(sym) && w !== h) exitWithError('rotation-90 symmetry requires square grid');
+  if (['B','C','D','E'].includes(sym) && (w % 2 !== 0 || h % 2 !== 0)) exitWithError('Selected symmetry requires even grid dimensions');
+
+  const density = Number(args.density || 3);
+  const difficulty = Number(args.difficulty || 3);
+  const obscurity = Number(args.obscurity || 2);
+  const minLen = Number(args.min || 3);
+  const maxLen = Number(args.max || Math.min(w, h, 12));
+  const language = args.lang || 'English';
+  const theme = args.theme || 'mixed';
+
+  if (!args.corpus) exitWithError('Missing --corpus path');
+  const corpusPath = args.corpus;
+  const byLength = loadCorpus(corpusPath);
+  if (!byLength) exitWithError('Unable to read corpus at ' + corpusPath);
+
+  // Try multiple attempts at layout + filling
+  const attemptsLimit = Number(args.attempts || 60);
+  let finalOut = null;
+  for (let attempt = 1; attempt <= attemptsLimit; attempt++) {
+    console.log(`Attempt ${attempt}/${attemptsLimit} — creating layout...`);
+    const grid = createGrid(w, h, 1);
+    const area = workAreaFor(sym, w, h);
+    const seeds = scatterSeeds(grid, area, density, sym);
+    console.log(`Seeds placed: ${seeds.length}`);
+    expandWorms(grid, seeds, sym);
+    groomGrid(grid, sym, minLen);
+
+    const slotsObj = listSlots(grid, minLen);
+    const across = slotsObj.across; const down = slotsObj.down;
+    console.log(`Across slots: ${across.length}, Down slots: ${down.length}`);
+
+    const allSlots = [...across, ...down];
+    if (allSlots.length === 0) { console.log('No slots found, retrying...'); continue; }
+
+    const constraints = { difficultyRange: [Math.max(1, difficulty - 2), difficulty], obscurityRange: [Math.max(1, obscurity - 1), Math.min(5, obscurity + 1)], language, theme };
+    console.log('Filling slots (backtracking)...');
+    const result = solveSlots(allSlots, byLength, constraints);
+    if (result && result.success) {
+      const assignment = result.assignment;
+      const nonce = crypto.randomUUID();
+      const out = { v: 1, id: crypto.randomUUID(), w, h, grid: gridToHex(grid), A: { s: [], c: [], h: [] }, D: { s: [], c: [], h: [] }, nonce };
+      for (const s of across) {
+        const ans = assignment[s.id] || null;
+        out.A.s.push(s.id);
+        const clue = ans && byLength.get(ans.length) && byLength.get(ans.length).find(it => it.word === ans) ? byLength.get(ans.length).find(it => it.word === ans).clue : '';
+        out.A.c.push(clue);
+        out.A.h.push(ans ? crypto.createHash('sha256').update(nonce + ans).digest('hex') : '');
+      }
+      for (const s of down) {
+        const ans = assignment[s.id] || null;
+        out.D.s.push(s.id);
+        const clue = ans && byLength.get(ans.length) && byLength.get(ans.length).find(it => it.word === ans) ? byLength.get(ans.length).find(it => it.word === ans).clue : '';
+        out.D.c.push(clue);
+        out.D.h.push(ans ? crypto.createHash('sha256').update(nonce + ans).digest('hex') : '');
+      }
+      if (args.output) { fs.writeFileSync(args.output, JSON.stringify(out, null, 2), 'utf8'); console.log('Wrote crossword to', args.output); } else { console.log(JSON.stringify(out, null, 2)); }
+      finalOut = out;
+      break;
+    }
+    if (attempt % 5 === 0) console.log(`Attempt ${attempt} failed, retrying...`);
+  }
+  if (!finalOut) exitWithError(`Failed to generate crossword after ${attemptsLimit} attempts`);
+}
+
+if (require.main === module) main().catch(err => { exitWithError(err); });
