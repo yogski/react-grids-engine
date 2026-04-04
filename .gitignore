@@ -13,6 +13,8 @@ dist-ssr
 specs
 *.local
 scripts/*.json
+scripts/*.jsonl
+scripts/*.db
 scripts/*.log
 scripts/*.txt
 

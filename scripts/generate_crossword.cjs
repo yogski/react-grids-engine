@@ -5,6 +5,28 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { spawnSync } = require('child_process');
+const { log } = require('console');
+
+// Global debug flag controlled by CLI `--debug`. Set in `main()`.
+let DEBUG = false;
+
+/**
+ * Conditional debug logger. Prints to stderr when `DEBUG` is true.
+ * @param {...any} args
+ */
+function logDebug(...args) { if (DEBUG) console.error('[debug]', ...args); }
+
+/**
+ * Print the grid as rows of binary values (1 = black/non-playable, 0 = white/playable),
+ * with cells separated by spaces for visual consistency.
+ * @param {number[][]} grid
+ */
+function printGrid(grid) {
+  for (let y = 0; y < grid.length; y++) {
+    const row = grid[y].map(v => (v ? '1' : '0')).join(' ');
+    console.log(row);
+  }
+}
 
 /**
  * Return a random integer between min and max (inclusive).
@@ -100,14 +122,25 @@ function inBounds(x, y, w, h) { return x >= 0 && y >= 0 && x < w && y < h; }
  * @returns {{x:number,y:number,w:number,h:number}} Rectangle for work area.
  */
 function workAreaFor(sym, w, h) {
+  let workArea = { x: 0, y: 0, w, h };
   switch (sym) {
-    case 'A': return { x: 0, y: 0, w, h };
-    case 'B': return { x: 0, y: 0, w: Math.floor(w / 2), h: Math.floor(h / 2) };
-    case 'C': return { x: 0, y: 0, w: Math.floor(w / 2), h };
-    case 'D': return { x: 0, y: 0, w: Math.floor(w / 2), h };
-    case 'E': return { x: 0, y: 0, w: Math.floor(w / 2), h: Math.floor(h / 2) };
-    default: return { x: 0, y: 0, w, h };
+    case 'A': break;
+    case 'B': {
+      workArea = { x: 0, y: 0, w: Math.ceil(w / 2), h: Math.ceil(h / 2) }; break;
+    };
+    case 'C': {
+      workArea = { x: 0, y: 0, w: Math.floor(w / 2), h }; break;
+    }
+    case 'D': {
+      workArea = { x: 0, y: 0, w: Math.floor(w / 2), h }; break;
+    }
+    case 'E': {
+      workArea = { x: 0, y: 0, w: Math.floor(w / 2), h: Math.floor(h / 2) }; break;
+    }
+    default: // no changes;
   }
+  logDebug('workAreaFor', { sym, workArea });
+  return workArea;
 }
 
 /**
@@ -128,7 +161,11 @@ function applySymmetrySet(grid, x, y, val, sym) {
    * @param {number} ny - Y coordinate.
    * @returns {void}
    */
-  function setIf(nx, ny) { if (!inBounds(nx, ny, w, h)) return; grid[ny][nx] = val; }
+  function setIf(nx, ny) {
+    if (!inBounds(nx, ny, w, h)) return;
+    grid[ny][nx] = val;
+    // logDebug('applySymmetrySet -> set', { nx, ny, val, sym });
+  }
   switch (sym) {
     case 'A': setIf(x, y); break;
     case 'D': // mirror vertical
@@ -146,8 +183,6 @@ function applySymmetrySet(grid, x, y, val, sym) {
     default: setIf(x, y); break;
   }
 }
-
-
 
 /**
  * Convert the grid to a hex string where each bit represents a cell (1 = black, 0 = white).
@@ -170,6 +205,38 @@ function gridToHex(grid) {
 }
 
 /**
+ * Print CLI help for the crossword generator and exit.
+ * @returns {void}
+ */
+function printHelp() {
+  console.log('Usage: node scripts/generate_crossword.cjs --size <WxH> --corpus <path> [options]');
+  console.log('Options:');
+  console.log('  --size <WxH>            Grid dimensions, e.g., 15x15 (required)');
+  console.log('  --corpus <path>         Path to corpus file (JSONL or plaintext) (required)');
+  console.log('  --symmetry <A|B|C|D|E>  Symmetry code (choose one):');
+  console.log('    A — none: no symmetry, the whole grid is generated independently (default)');
+  console.log('    B — rotation-90: 4-way rotational symmetry (requires square grid)');
+  console.log('    C — rotation-180: 180° rotational symmetry (cells paired across center)');
+  console.log('    D — mirror-vertical: reflect left↔right across the vertical axis');
+  console.log('    E — mirror-both: reflect across vertical and horizontal axes (4-way mirror)');
+  console.log('  --density <1-5>         Slot density (1 sparsest..5 densest). Default: 3');
+  console.log('  --difficulty <1-5>      Difficulty level (1 easiest..5 hardest). Default: 3');
+  console.log('  --obscurity <1-5>       Obscurity level (1 least..5 most). Default: 2');
+  console.log('  --min <n>               Minimum word length. Default: 3');
+  console.log('  --max <n>               Maximum word length. Default: min(width,height,12)');
+  console.log('  --lang <code>           Language for clues (default: English)');
+  console.log('  --theme <name>          Theme/category for clues (default: mixed)');
+  console.log('  --output <path>         Output file path (if omitted prints to stdout)');
+  console.log('  --attempts <n>          Number of layout+fill attempts. Default: 60');
+  console.log('  --debug                 Enable debug logging (verbose)');
+  console.log('  --selftest              Run internal self-test (generates sample corpus if needed)');
+  console.log('  --help, -h              Show this help text');
+  console.log('Examples:');
+  console.log('  node scripts/generate_crossword.cjs --size 15x15 --corpus scripts/sample_corpus.jsonl --output out.json');
+  console.log('  node scripts/generate_crossword.cjs --size 9x9 --corpus scripts/sample_corpus.jsonl --debug');
+}
+
+/**
  * Compute the average pairwise Manhattan distance for an array of points.
  * @param {{x:number,y:number}[]} points - Array of points with x/y coordinates.
  * @returns {number} Average Manhattan distance between all distinct point pairs.
@@ -177,8 +244,39 @@ function gridToHex(grid) {
 function computeAveragePairwiseManhattan(points) {
   const n = points.length; if (n < 2) return Infinity;
   let sum = 0, pairs = 0;
-  for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) { sum += Math.abs(points[i].x - points[j].x) + Math.abs(points[i].y - points[j].y); pairs++; }
+  for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) { sum += computeManhattanDistance(points[i], points[j]); pairs++; }
   return sum / Math.max(1, pairs);
+}
+
+/**
+ * Compute the Manhattan distance between two points.
+ * @param {{x:number,y:number} p1 - First point.
+ * @param {{x:number,y:number} p2 - Second point.
+ * @return {number} Manhattan distance |p1.x - p2.x| + |p1.y - p2.y|.
+ * 
+ */
+function computeManhattanDistance(p1, p2) { 
+  return Math.abs(p1.x - p2.x) + Math.abs(p1.y - p2.y); 
+}
+
+/**
+ * List coordinates at a specific Manhattan distance from a given point.
+ * @param {{x:number,y:number}} point - The reference point.
+ * @param {number} distance - The Manhattan distance.
+ * @returns {{x:number,y:number}[]} Array of coordinates at the specified distance.
+ */
+function listCoordinatesWithManhattanDistance(point, distance) {
+  // todo: implement this
+}
+
+/**
+ * Filter coordinates that fall within a specified area.
+ * @param {{x:number,y:number}[]} coords - Array of coordinates to filter.
+ * @param {{x:number,y:number,w:number,h:number}} area - Area rectangle.
+ * @returns {{x:number,y:number}[]} Filtered coordinates within the area.
+ */
+function filterCoordinatesInArea(coords, area) {
+  return coords.filter(c => c.x >= area.x && c.x < area.x + area.w && c.y >= area.y && c.y < area.y + area.h);
 }
 
 /**
@@ -214,6 +312,7 @@ function scatterSeeds(grid, area, density, sym) {
   let attempts = 0;
   const { x: ax, y: ay, w: aw, h: ah } = area;
   const thresh = scatteringThresholds(density, aw, ah);
+  logDebug('scatterSeeds properties of area, density, symmetry, thresholds:', { area, density, sym, thresh });
   while (attempts++ < maxAttempts) {
     const nx = ax + randInt(0, Math.max(0, aw - 1));
     const ny = ay + randInt(0, Math.max(0, ah - 1));
@@ -234,11 +333,14 @@ function scatterSeeds(grid, area, density, sym) {
     // accept seed
     seeds.push({ x: nx, y: ny });
     applySymmetrySet(grid, nx, ny, 0, sym);
+    // logDebug('scatterSeeds placed', { x: nx, y: ny, seeds: seeds.length });
     if (seeds.length >= Math.max(2, thresh.count)) {
       const avg = computeAveragePairwiseManhattan(seeds);
       if (avg <= thresh.avg) break;
     }
   }
+  logDebug('scatterSeeds finished', { totalSeeds: seeds.length, attempts });
+  logDebug('scatterSeeds coordinates', seeds);
   return seeds;
 }
 
@@ -250,13 +352,16 @@ function scatterSeeds(grid, area, density, sym) {
  * @returns {void}
  */
 function expandWorms(grid, seeds, sym) {
+  logDebug('expandWorms seedsCount', seeds.length);
   const dirs = [[1,0],[-1,0],[0,1],[0,-1]];
   const w = grid[0].length, h = grid.length;
   for (const s of seeds) {
     let cx = s.x, cy = s.y;
+    // logDebug('expandWorms seedStart', s);
     for (let steps = 0; steps < 50; steps++) {
       const dir = pick(dirs);
       const length = randInt(1, 4);
+      // logDebug('worm step', { seed: s, step: steps, dir, length });
       let blocked = false;
       for (let i = 1; i <= length; i++) {
         const nx = cx + dir[0] * i, ny = cy + dir[1] * i;
@@ -269,6 +374,7 @@ function expandWorms(grid, seeds, sym) {
       }
       cx += dir[0] * length; cy += dir[1] * length;
     }
+    // logDebug('expandWorms seedEnd', { seed: s, end: { x: cx, y: cy } });
   }
 }
 
@@ -282,17 +388,20 @@ function expandWorms(grid, seeds, sym) {
 function groomGrid(grid, sym, minWordLen) {
   const w = grid[0].length, h = grid.length;
   // remove isolated white cells
+  logDebug('groomGrid start');
   let changed = true;
+  let removedIsolated = 0;
   while (changed) {
     changed = false;
     for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
       if (grid[y][x] === 0) {
         const neighbors = [[1,0],[-1,0],[0,1],[0,-1]];
         const count = neighbors.reduce((s, [dx,dy]) => s + ((inBounds(x+dx, y+dy, w, h) && grid[y+dy][x+dx] === 0) ? 1 : 0), 0);
-        if (count === 0) { applySymmetrySet(grid, x, y, 1, sym); changed = true; }
+        if (count === 0) { applySymmetrySet(grid, x, y, 1, sym); changed = true; removedIsolated++; logDebug('groomGrid removed isolated', { x, y }); }
       }
     }
   }
+  logDebug('groomGrid removedIsolated', removedIsolated);
   // break very long runs
   const longLimit = Math.min(Math.max(w, h), 14);
   for (let y = 0; y < h; y++) {
@@ -302,6 +411,7 @@ function groomGrid(grid, sym, minWordLen) {
         if (run > longLimit) {
           const bx = Math.floor((start + start + run) / 2);
           applySymmetrySet(grid, bx, y, 1, sym);
+          // logDebug('groomGrid broke long horizontal run', { y, start, run, bx });
         }
         run = 0;
       }
@@ -314,6 +424,7 @@ function groomGrid(grid, sym, minWordLen) {
         if (run > longLimit) {
           const by = Math.floor((start + start + run) / 2);
           applySymmetrySet(grid, x, by, 1, sym);
+          // logDebug('groomGrid broke long vertical run', { x, start, run, by });
         }
         run = 0;
       }
@@ -368,6 +479,14 @@ function listSlots(grid, minLen) {
   return { across, down };
 }
 
+// Debug: print a short summary of discovered slots
+function debugListSlotsInfo(slotsObj) {
+  if (!DEBUG) return;
+  logDebug('listSlots summary', { across: slotsObj.across.length, down: slotsObj.down.length });
+  const show = (arr) => arr.slice(0, 10).map(s => ({ id: s.id, x: s.x, y: s.y, len: s.len }));
+  // logDebug('listSlots samples', { across: show(slotsObj.across), down: show(slotsObj.down) });
+}
+
 /**
  * Load a corpus file (JSONL/JSON or plaintext) and index words by length.
  * @param {string} corpusPath - Path to corpus file.
@@ -391,6 +510,7 @@ function loadCorpus(corpusPath) {
     if (!byLength.has(len)) byLength.set(len, []);
     byLength.get(len).push({ word, clue: it.clue || `Clue for ${word}`, difficulty: Number(it.difficulty) || 3, obscurity: Number(it.obscurity) || 2, language: it.language || 'English', theme: it.theme || 'mixed' });
   }
+  logDebug('loadCorpus loaded', { totalItems: items.length, lengths: Array.from(byLength.keys()).sort((a,b)=>a-b) });
   return byLength;
 }
 
@@ -439,6 +559,7 @@ function placeWordInAssignment(slot, wordObj, assignment) {
   for (const c of slot.cells) {
     assignment.__cells[`${c.x},${c.y}`] = wordObj.word[c.idx];
   }
+  // logDebug('placeWordInAssignment', { slot: slot.id, word: wordObj.word });
 }
 
 /**
@@ -458,6 +579,7 @@ function removeWordFromAssignment(slot, assignment) {
     // find slot by id not available here; caller should keep slots order
   }
   delete assignment.__cells;
+  // logDebug('removeWordFromAssignment', { slot: slot.id });
 }
 
 /**
@@ -504,6 +626,7 @@ function solveSlots(allSlots, byLength, constraints) {
   function backtrack(remainingIds) {
     if (remainingIds.length === 0) return true;
     if (++steps > maxSteps) return false;
+    if (DEBUG && steps % 1000 === 0) logDebug('solveSlots progress', { steps, remaining: remainingIds.length });
 
     // pick the slot with fewest candidates now
     let bestId = null;
@@ -519,15 +642,16 @@ function solveSlots(allSlots, byLength, constraints) {
       if (!cand || cand.length === 0) return false; // dead end even after relax
       if (!bestCand || cand.length < bestCand.length) { bestCand = cand; bestId = id; }
     }
-
     const slot = slotMap.get(bestId);
     for (const cand of bestCand) {
+      // logDebug('solveSlots try', { slot: slot.id, word: cand.word });
       assignment[slot.id] = cand.word;
       assignment.__cells = rebuildCells();
       const nextRemaining = remainingIds.filter(x => x !== slot.id);
-      if (backtrack(nextRemaining)) return true;
+      if (backtrack(nextRemaining)) { return true; }
       delete assignment[slot.id];
       assignment.__cells = rebuildCells();
+      // logDebug('solveSlots backtrack', { slot: slot.id, word: cand.word, steps });
     }
     return false;
   }
@@ -544,6 +668,11 @@ function solveSlots(allSlots, byLength, constraints) {
  */
 async function main() {
   const args = parseArgs();
+  // enable debug if CLI provided `--debug true|1` or flag `--debug`
+  DEBUG = args.debug === true || String(args.debug) === 'true' || String(args.debug) === '1';
+  if (DEBUG) logDebug('Debug enabled');
+  // show help and exit
+  if (args.help || args.h) { printHelp(); process.exit(0); }
   if (args.selftest) {
     // generate a sample corpus first
     const samplePath = path.join(__dirname, 'sample_corpus.jsonl');
@@ -585,9 +714,13 @@ async function main() {
     const grid = createGrid(w, h, 1);
     const area = workAreaFor(sym, w, h);
     const seeds = scatterSeeds(grid, area, density, sym);
-    console.log(`Seeds placed: ${seeds.length}`);
     expandWorms(grid, seeds, sym);
     groomGrid(grid, sym, minLen);
+    if (DEBUG) {
+      console.log('Generated layout:');
+      printGrid(grid);
+      logDebug('grid hex', gridToHex(grid));
+    }
 
     const slotsObj = listSlots(grid, minLen);
     const across = slotsObj.across; const down = slotsObj.down;
