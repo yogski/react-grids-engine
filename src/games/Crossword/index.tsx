@@ -13,6 +13,8 @@ import {
 } from './logic'
 import { TEST_PUZZLE } from './testPuzzle'
 import { TEST_PUZZLE_2 } from './testPuzzle2'
+import { GENERATED_1 } from './generated1'
+import { GENERATED_2 } from './generated2'
 import './styles.css'
 
 // ─── GridCell ────────────────────────────────────────────────────────────────
@@ -114,6 +116,8 @@ function ClueList({ title, slots, activeSlotId, solvedSlots, onClueClick }: Clue
 const PUZZLES: Record<string, { label: string; puzzle: CrosswordPuzzle }> = {
   p1: { label: 'Puzzle 1', puzzle: TEST_PUZZLE },
   p2: { label: 'Puzzle 2', puzzle: TEST_PUZZLE_2 },
+  g1: { label: 'Generated 1', puzzle: GENERATED_1 },
+  g2: { label: 'Generated 2', puzzle: GENERATED_2 },
 }
 
 export function Crossword() {

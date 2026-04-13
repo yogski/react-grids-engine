@@ -266,7 +266,29 @@ function computeManhattanDistance(p1, p2) {
  * @returns {{x:number,y:number}[]} Array of coordinates at the specified distance.
  */
 function listCoordinatesWithManhattanDistance(point, distance) {
-  // todo: implement this
+  const coords = [];
+  const d = Number(distance);
+  if (!Number.isFinite(d) || d < 0) return coords;
+  for (let dx = -d; dx <= d; dx++) {
+    const dyAbs = d - Math.abs(dx);
+    if (dyAbs < 0) continue;
+    // two possible signs for dy (unless zero)
+    const x1 = point.x + dx;
+    const y1 = point.y + dyAbs;
+    coords.push({ x: x1, y: y1 });
+    if (dyAbs !== 0) {
+      const x2 = point.x + dx;
+      const y2 = point.y - dyAbs;
+      coords.push({ x: x2, y: y2 });
+    }
+  }
+  // unique
+  const seen = new Set();
+  return coords.filter(c => {
+    const k = `${c.x},${c.y}`;
+    if (seen.has(k)) return false;
+    seen.add(k); return true;
+  });
 }
 
 /**
@@ -280,6 +302,139 @@ function filterCoordinatesInArea(coords, area) {
 }
 
 /**
+ * Check that all white cells (value 0) form a single orthogonally-connected region
+ * and that no white cell is isolated (each white cell has at least one orthogonal white neighbor).
+ * @param {number[][]} grid - Grid array (rows x cols) with 0 = white, 1 = black.
+ * @returns {boolean} True when white cells are connected and none are isolated.
+ */
+function areWhiteCellsConnected(grid) {
+  if (!grid || !grid.length) return false;
+  const h = grid.length, w = grid[0].length;
+  const whites = [];
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) if (grid[y][x] === 0) whites.push({ x, y });
+  if (whites.length === 0) return false;
+
+  // ensure no isolated white cell (must have at least one orthogonal white neighbor)
+  const dirs = [[1,0],[-1,0],[0,1],[0,-1]];
+  for (const c of whites) {
+    let hasNeighbor = false;
+    for (const [dx, dy] of dirs) {
+      const nx = c.x + dx, ny = c.y + dy;
+      if (inBounds(nx, ny, w, h) && grid[ny][nx] === 0) { hasNeighbor = true; break; }
+    }
+    if (!hasNeighbor) {
+      if (DEBUG) logDebug('areWhiteCellsConnected -> isolated cell', c);
+      return false;
+    }
+  }
+
+  // BFS/ flood-fill from first white cell
+  const start = whites[0];
+  const q = [start];
+  const seen = new Set([`${start.x},${start.y}`]);
+  while (q.length) {
+    const cur = q.shift();
+    for (const [dx, dy] of dirs) {
+      const nx = cur.x + dx, ny = cur.y + dy;
+      const key = `${nx},${ny}`;
+      if (!inBounds(nx, ny, w, h)) continue;
+      if (grid[ny][nx] !== 0) continue;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      q.push({ x: nx, y: ny });
+    }
+  }
+  if (DEBUG) logDebug('areWhiteCellsConnected', { whiteCount: whites.length, reached: seen.size });
+  return seen.size === whites.length;
+}
+
+/**
+ * Replace occurrences of a subgrid `pattern` inside `grid` with one of the
+ * provided `replacements`. Matching is exact unless a pattern cell is `null`
+ * (treated as a wildcard that matches any value).
+ * The function modifies `grid` in-place.
+ *
+ * Options:
+ * - `allowOverlap` (default: true) — whether replacements can overlap in the same pass.
+ * - `maxReplacements` (default: Infinity) — stop after this many replacements.
+ * - `maxPasses` (default: 1) — number of full scans to perform (use >1 to cascade changes).
+ *
+ * @param {number[][]} grid - Main grid (modified in-place).
+ * @param {number[][]} pattern - Pattern to match (rows x cols). Use `null` for wildcard.
+ * @param {Array<number[][]>} replacements - Array of replacement patterns (same dims as `pattern`).
+ * @param {{allowOverlap?:boolean,maxReplacements?:number,maxPasses?:number}} [options]
+ * @returns {number} Number of replacements applied.
+ */
+function replaceSubgridMatches(grid, pattern, replacements, options = {}) {
+  if (!grid || !grid.length) return 0;
+  const h = grid.length, w = grid[0].length;
+  if (!pattern || !pattern.length || !pattern[0].length) return 0;
+  const pH = pattern.length, pW = pattern[0].length;
+  if (!Array.isArray(replacements) || replacements.length === 0) return 0;
+  for (const r of replacements) {
+    if (!r || r.length !== pH) throw new Error('replacement height mismatch');
+    for (let ry = 0; ry < pH; ry++) if (!Array.isArray(r[ry]) || r[ry].length !== pW) throw new Error('replacement width mismatch');
+  }
+
+  const { allowOverlap = true, maxReplacements = Infinity, maxPasses = 1 } = options;
+  let total = 0;
+
+  for (let pass = 0; pass < Math.max(1, Number(maxPasses)); pass++) {
+    if (total >= maxReplacements) break;
+    const replacedMask = Array.from({ length: h }, () => Array.from({ length: w }, () => false));
+    let changedThisPass = false;
+
+    for (let y = 0; y <= h - pH; y++) {
+      for (let x = 0; x <= w - pW; x++) {
+        if (!allowOverlap) {
+          let overlap = false;
+          for (let dy = 0; dy < pH && !overlap; dy++) {
+            for (let dx = 0; dx < pW; dx++) {
+              if (replacedMask[y + dy][x + dx]) { overlap = true; break; }
+            }
+          }
+          if (overlap) continue;
+        }
+
+        // check pattern match (null in pattern = wildcard)
+        let match = true;
+        for (let dy = 0; dy < pH && match; dy++) {
+          for (let dx = 0; dx < pW; dx++) {
+            const pat = pattern[dy][dx];
+            if (pat === null || pat === undefined) continue; // wildcard
+            if (grid[y + dy][x + dx] !== pat) { match = false; break; }
+          }
+        }
+        if (!match) continue;
+
+        // choose a replacement
+        const repl = replacements.length === 1 ? replacements[0] : pick(replacements);
+
+        // apply replacement (null/undefined in replacement = keep existing cell)
+        for (let dy = 0; dy < pH; dy++) {
+          for (let dx = 0; dx < pW; dx++) {
+            const val = repl[dy][dx];
+            if (val === null || val === undefined) continue;
+            grid[y + dy][x + dx] = val;
+            replacedMask[y + dy][x + dx] = true;
+          }
+        }
+        total++; changedThisPass = true;
+        if (DEBUG) logDebug('replaceSubgridMatches applied', { x, y, total });
+        if (total >= maxReplacements) break;
+      }
+      if (total >= maxReplacements) break;
+    }
+    if (!changedThisPass) break;
+  }
+
+  return total;
+}
+
+// Export helper functions for testing and external use
+module.exports = Object.assign(module.exports || {}, { replaceSubgridMatches, areWhiteCellsConnected });
+
+/**
  * Return scattering thresholds (average distance and target count) based on density.
  * @param {number} density - Density level (1-5).
  * @param {number} areaW - Work area width.
@@ -288,12 +443,12 @@ function filterCoordinatesInArea(coords, area) {
  */
 function scatteringThresholds(density, areaW, areaH) {
   switch (Number(density)) {
-    case 1: return { avg: 4.5, count: Math.min(areaW, areaH) };
-    case 2: return { avg: 3.8, count: Math.max(areaW, areaH) };
-    case 3: return { avg: 3.0, count: Math.min(areaW + areaH, Math.floor((areaW * areaH) * 0.12)) };
-    case 4: return { avg: 2.4, count: Math.max(areaW + areaH, Math.floor((areaW * areaH) * 0.14)) };
-    case 5: return { avg: 1.8, count: Math.floor((areaW * areaH) * 0.20) };
-    default: return { avg: 3.0, count: Math.min(areaW + areaH, Math.floor((areaW * areaH) * 0.12)) };
+    case 1: return { avg: 4.5, count: Math.floor((areaW * areaH) * 0.20) };
+    case 2: return { avg: 3.8, count: Math.floor((areaW * areaH) * 0.30) };
+    case 3: return { avg: 3.0, count: Math.floor((areaW * areaH) * 0.40) };
+    case 4: return { avg: 2.4, count: Math.floor((areaW * areaH) * 0.50) };
+    case 5: return { avg: 1.8, count: Math.floor((areaW * areaH) * 0.60) };
+    default: return { avg: 3.0, count: Math.floor((areaW * areaH) * 0.40) };
   }
 }
 
@@ -307,41 +462,104 @@ function scatteringThresholds(density, areaW, areaH) {
  * @returns {{x:number,y:number}[]} Array of placed seed coordinates.
  */
 function scatterSeeds(grid, area, density, sym) {
+  // Create a local work-grid for the area so we can build white regions
+  const { x: ax, y: ay, w: aw, h: ah } = area;
+  const workGrid = createGrid(aw, ah, 1);
   const seeds = [];
   const maxAttempts = 50000;
   let attempts = 0;
-  const { x: ax, y: ay, w: aw, h: ah } = area;
   const thresh = scatteringThresholds(density, aw, ah);
-  logDebug('scatterSeeds properties of area, density, symmetry, thresholds:', { area, density, sym, thresh });
+  const targetCount = Math.max(2, Math.min(Math.floor(thresh.count), aw * ah));
+  logDebug('scatterSeeds start', { area, density, sym, thresh, targetCount });
+
   while (attempts++ < maxAttempts) {
-    const nx = ax + randInt(0, Math.max(0, aw - 1));
-    const ny = ay + randInt(0, Math.max(0, ah - 1));
-    // skip if already white in the mirrored grid
-    if (grid[ny][nx] === 0) continue;
-    // adjacency check
-    let adjacent = false;
-    const adjDirs = [[1,0],[-1,0],[0,1],[0,-1]];
-    for (const [dx, dy] of adjDirs) {
-      const tx = nx + dx, ty = ny + dy;
-      if (inBounds(tx, ty, grid[0].length, grid.length) && grid[ty][tx] === 0) { adjacent = true; break; }
+    // initial seed: pick any free cell in the local work area
+    if (seeds.length === 0) {
+      const lx = randInt(0, Math.max(0, aw - 1));
+      const ly = randInt(0, Math.max(0, ah - 1));
+      if (workGrid[ly][lx] === 0) continue;
+      workGrid[ly][lx] = 0;
+      seeds.push({ x: ax + lx, y: ay + ly });
+    } else {
+      // self-correcting distance selection towards threshold.avg
+      let upperBoundDistance = Math.max(aw, ah) - 2;
+      const currAvg = computeAveragePairwiseManhattan(seeds);
+      const target = Math.max(2, Math.min(upperBoundDistance, Math.round(thresh.avg) || 3));
+      let distance = target + randInt(-1, 1);
+      if (currAvg < thresh.avg) distance = Math.min(upperBoundDistance, distance + 1);
+      else if (currAvg > thresh.avg) distance = Math.max(2, distance - 1);
+      distance = Math.max(2, Math.min(upperBoundDistance, distance));
+
+      // pick a base seed and generate candidates at the chosen distance
+      const base = pick(seeds);
+      let candidates = listCoordinatesWithManhattanDistance(base, distance);
+      candidates = filterCoordinatesInArea(candidates, area);
+      // filter out already used or adjacent cells
+      candidates = candidates.filter(c => {
+        const lx = c.x - ax, ly = c.y - ay;
+        if (!inBounds(lx, ly, aw, ah)) return false;
+        if (workGrid[ly][lx] === 0) return false;
+        for (const s of seeds) if (Math.abs(s.x - c.x) + Math.abs(s.y - c.y) <= 1) return false;
+        return true;
+      });
+
+      // if none found at that distance, try nearby distances before giving up
+      if (!candidates.length) {
+        const tried = new Set();
+        for (let d = 2; d <= upperBoundDistance && candidates.length === 0; d++) {
+          if (d === distance) continue;
+          tried.add(d);
+          let candD = listCoordinatesWithManhattanDistance(base, d);
+          candD = filterCoordinatesInArea(candD, area);
+          candD = candD.filter(c => {
+            const lx = c.x - ax, ly = c.y - ay;
+            if (!inBounds(lx, ly, aw, ah)) return false;
+            if (workGrid[ly][lx] === 0) return false;
+            for (const s of seeds) if (Math.abs(s.x - c.x) + Math.abs(s.y - c.y) <= 1) return false;
+            return true;
+          });
+          if (candD.length) candidates = candD;
+        }
+      }
+
+      if (!candidates.length) {
+        // fallback: pick any random free cell
+        let found = null;
+        for (let t = 0; t < 200; t++) {
+          const lx = randInt(0, Math.max(0, aw - 1));
+          const ly = randInt(0, Math.max(0, ah - 1));
+          if (workGrid[ly][lx] === 0) continue;
+          const absX = ax + lx, absY = ay + ly;
+          let adj = false;
+          for (const s of seeds) if (Math.abs(s.x - absX) + Math.abs(s.y - absY) <= 1) { adj = true; break; }
+          if (!adj) { found = { x: absX, y: absY }; break; }
+        }
+        if (found) {
+          const lx = found.x - ax, ly = found.y - ay;
+          workGrid[ly][lx] = 0; seeds.push(found);
+        }
+      } else {
+        const pickC = pick(candidates);
+        const lx = pickC.x - ax, ly = pickC.y - ay;
+        workGrid[ly][lx] = 0;
+        seeds.push({ x: pickC.x, y: pickC.y });
+      }
     }
-    if (adjacent) continue;
-    // same x or y with two or more existing white seeds
-    const sameX = seeds.filter(p => p.x === nx).length;
-    const sameY = seeds.filter(p => p.y === ny).length;
-    if (sameX >= 2 || sameY >= 2) continue;
-    // accept seed
-    seeds.push({ x: nx, y: ny });
-    applySymmetrySet(grid, nx, ny, 0, sym);
-    // logDebug('scatterSeeds placed', { x: nx, y: ny, seeds: seeds.length });
-    if (seeds.length >= Math.max(2, thresh.count)) {
+
+    // stop condition: enough seeds and pairwise average meets or exceeds threshold
+    if (seeds.length >= targetCount) {
       const avg = computeAveragePairwiseManhattan(seeds);
-      if (avg <= thresh.avg) break;
+      if (avg >= thresh.avg) break;
     }
   }
+
   logDebug('scatterSeeds finished', { totalSeeds: seeds.length, attempts });
   logDebug('scatterSeeds coordinates', seeds);
-  return seeds;
+  logDebug('grid after scatterSeeds (workGrid)');
+  if (DEBUG) {
+    printGrid(workGrid);
+  }
+  return { seeds, workGrid };
 }
 
 /**
@@ -351,12 +569,14 @@ function scatterSeeds(grid, area, density, sym) {
  * @param {string} sym - Symmetry code to apply when expanding.
  * @returns {void}
  */
-function expandWorms(grid, seeds, sym) {
+function expandWorms(workGrid, seeds, area) {
   logDebug('expandWorms seedsCount', seeds.length);
   const dirs = [[1,0],[-1,0],[0,1],[0,-1]];
-  const w = grid[0].length, h = grid.length;
+  const w = workGrid[0].length, h = workGrid.length;
   for (const s of seeds) {
-    let cx = s.x, cy = s.y;
+    // map absolute seed coords into local workGrid coords
+    let cx = s.x - area.x, cy = s.y - area.y;
+    if (!inBounds(cx, cy, w, h)) continue;
     // logDebug('expandWorms seedStart', s);
     for (let steps = 0; steps < 50; steps++) {
       const dir = pick(dirs);
@@ -365,27 +585,51 @@ function expandWorms(grid, seeds, sym) {
       let blocked = false;
       for (let i = 1; i <= length; i++) {
         const nx = cx + dir[0] * i, ny = cy + dir[1] * i;
-        if (!inBounds(nx, ny, w, h) || grid[ny][nx] === 0) { blocked = true; break; }
+        if (!inBounds(nx, ny, w, h) || workGrid[ny][nx] === 0) { blocked = true; break; }
       }
       if (blocked) break;
       for (let i = 1; i <= length; i++) {
         const nx = cx + dir[0] * i, ny = cy + dir[1] * i;
-        applySymmetrySet(grid, nx, ny, 0, sym);
+        workGrid[ny][nx] = 0;
       }
       cx += dir[0] * length; cy += dir[1] * length;
     }
-    // logDebug('expandWorms seedEnd', { seed: s, end: { x: cx, y: cy } });
+    // logDebug('expandWorms seedEnd', { seed: s, end: { x: cx + area.x, y: cy + area.y } });
   }
+  if (DEBUG) {
+    logDebug('grid after expandWorms (workGrid)');
+    printGrid(workGrid);
+  }
+}
+
+/**
+ * Transform the local work area (workGrid) into the main crossword grid applying symmetry.
+ * @param {number[][]} workGrid - Local area grid (rows x cols) where 0 = white.
+ * @param {number[][]} grid - Main crossword grid to modify.
+ * @param {{x:number,y:number,w:number,h:number}} area - Work area rectangle in global coords.
+ * @param {string} sym - Symmetry code to apply when mapping cells.
+ */
+function transformWorkAreaToGrid(workGrid, grid, area, sym) {
+  const h = workGrid.length;
+  const w = workGrid[0].length;
+  for (let ly = 0; ly < h; ly++) {
+    for (let lx = 0; lx < w; lx++) {
+      if (workGrid[ly][lx] === 0) {
+        const gx = area.x + lx, gy = area.y + ly;
+        applySymmetrySet(grid, gx, gy, 0, sym);
+      }
+    }
+  }
+  logDebug('transformWorkAreaToGrid applied', { area, sym });
 }
 
 /**
  * Groom the grid by removing isolated white cells and breaking very long runs.
  * @param {number[][]} grid - Grid modified in-place.
  * @param {string} sym - Symmetry code used when changing cells.
- * @param {number} minWordLen - Minimum word length (used to determine grooming thresholds).
  * @returns {void}
  */
-function groomGrid(grid, sym, minWordLen) {
+function groomGrid(grid, sym) {
   const w = grid[0].length, h = grid.length;
   // remove isolated white cells
   logDebug('groomGrid start');
@@ -429,6 +673,10 @@ function groomGrid(grid, sym, minWordLen) {
         run = 0;
       }
     }
+  }
+  if (DEBUG) {
+    logDebug('grid after groomGrid');
+    printGrid(grid);
   }
 }
 
@@ -713,9 +961,11 @@ async function main() {
     console.log(`Attempt ${attempt}/${attemptsLimit} — creating layout...`);
     const grid = createGrid(w, h, 1);
     const area = workAreaFor(sym, w, h);
-    const seeds = scatterSeeds(grid, area, density, sym);
-    expandWorms(grid, seeds, sym);
-    groomGrid(grid, sym, minLen);
+    const { seeds, workGrid } = scatterSeeds(grid, area, density, sym);
+    expandWorms(workGrid, seeds, area);
+    groomGrid(workGrid, sym);
+    transformWorkAreaToGrid(workGrid, grid, area, sym);
+    groomGrid(grid, sym);
     if (DEBUG) {
       console.log('Generated layout:');
       printGrid(grid);
