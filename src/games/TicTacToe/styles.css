@@ -1,0 +1,101 @@
+.ttt {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  font-family: inherit;
+}
+
+.ttt__title {
+  margin: 0;
+}
+
+.ttt__controls {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.ttt__status {
+  font-weight: 600;
+}
+
+.ttt__buttons {
+  display: flex;
+  gap: 8px;
+}
+
+.ttt__buttons button {
+  padding: 8px 12px;
+  border: 1px solid #333;
+  background: #fff;
+  cursor: pointer;
+  font-size: 0.9rem;
+  border-radius: 4px;
+  transition: background 0.12s ease;
+}
+
+.ttt__buttons button:hover {
+  background: #f0f0f8;
+}
+
+.ttt-grid {
+  width: 300px;
+  max-width: 90vw;
+}
+
+.ttt-grid [role="grid"] {
+  display: grid;
+  gap: 6px;
+  width: 100%;
+}
+
+.ttt-grid [role="gridcell"] {
+  display: flex;
+}
+
+.ttt-square {
+  appearance: none;
+  background: #fff;
+  border: 2px solid #333;
+  height: 90px;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 36px;
+  cursor: pointer;
+  transition: background 0.12s ease, transform 0.06s ease;
+  padding: 0;
+}
+
+.ttt-square:hover:not(:disabled) {
+  background: #f0f0f8;
+  transform: translateY(-1px);
+}
+
+.ttt-square[data-highlight] {
+  background: #fffbcc;
+  border-color: #e6a800;
+}
+
+.ttt-square[data-disabled] {
+  opacity: 0.9;
+  cursor: default;
+}
+
+.ttt-square:disabled {
+  cursor: not-allowed;
+}
+
+.ttt-square__symbol {
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.ttt__ai {
+  font-size: 0.9rem;
+  color: #666;
+}
