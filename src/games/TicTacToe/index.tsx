@@ -65,6 +65,7 @@ export function TicTacToe() {
 
   useEffect(() => {
     let t: number | undefined
+    const turnLimit = 360;
     if (mode === 'pvc' && currentPlayer === 'X' && !winner) {
       setAiThinking(true)
       t = window.setTimeout(() => {
@@ -88,7 +89,7 @@ export function TicTacToe() {
           setCurrentPlayer('O')
         }
         setAiThinking(false)
-      }, 350)
+      }, turnLimit)
     }
     return () => {
       if (t) clearTimeout(t)
