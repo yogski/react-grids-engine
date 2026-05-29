@@ -2,13 +2,21 @@ import { useState } from 'react'
 import { AbxTicTacToe } from './games/AbxTicTacToe'
 import { Chess } from './games/Chess'
 import { Crossword } from './games/Crossword'
+import { CrosswordLayoutMaker } from './games/crosswordLayoutMaker'
 import { Sudoku } from './games/Sudoku'
 import { TicTacToe } from './games/TicTacToe'
 
-type GameId = 'crossword' | 'tictactoe' | 'abx-tictactoe' | 'chess' | 'sudoku'
+type GameId =
+  | 'crossword'
+  | 'crossword-layout-maker'
+  | 'tictactoe'
+  | 'abx-tictactoe'
+  | 'chess'
+  | 'sudoku'
 
 const GAMES: { id: GameId; label: string }[] = [
   { id: 'crossword', label: 'Crossword' },
+  { id: 'crossword-layout-maker', label: 'Crossword Layout Maker' },
   { id: 'tictactoe', label: 'Tic Tac Toe' },
   { id: 'abx-tictactoe', label: 'Abx Tic Tac Toe' },
   { id: 'chess', label: 'Chess' },
@@ -18,6 +26,7 @@ const GAMES: { id: GameId; label: string }[] = [
 function renderGame(id: GameId) {
   switch (id) {
     case 'crossword': return <Crossword />
+    case 'crossword-layout-maker': return <CrosswordLayoutMaker />
     case 'tictactoe': return <TicTacToe />
     case 'abx-tictactoe': return <AbxTicTacToe />
     case 'chess':     return <Chess />
